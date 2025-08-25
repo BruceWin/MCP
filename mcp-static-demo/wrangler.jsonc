@@ -1,0 +1,22 @@
+{
+  "name": "mcp-static-demo",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-08-01",
+
+  // Optional but handy for logs in dash
+  "observability": { "enabled": true },
+
+  // Non-secret vars can live here. DO NOT put secrets in source.
+  "vars": {
+    // "NON_SECRET_EXAMPLE": "hello"
+  },
+
+  "env": {
+    "dev": {
+      // Non-secret dev-only vars (optional)
+      "vars": {
+        // "NON_SECRET_DEV": "hello-dev"
+      }
+    }
+  }
+}
