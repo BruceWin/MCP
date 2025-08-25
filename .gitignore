@@ -1,1 +1,3 @@
 mcp-static-demo/dev.vars
+.wrangler/
+node_modules/
