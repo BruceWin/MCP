@@ -2,3 +2,4 @@ mcp-static-demo/dev.vars
 mcp-static-demo/.dev.vars
 .wrangler/
 node_modules/
+mcp-static-demo/last-response.json

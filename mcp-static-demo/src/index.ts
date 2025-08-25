@@ -1,18 +1,11 @@
-export interface Env {
-  MCP_TOKEN: string; // set via `wrangler secret put MCP_TOKEN`
-}
+export interface Env { MCP_TOKEN: string }
 
-type Tool = {
-  name: string;
-  description: string;
-  input_schema: any;
-};
-
-const TOOLS: Tool[] = [
+// ---- Tools (camelCase inputSchema) ----
+const TOOLS = [
   {
     name: "search",
     description: "Search private corpus. Returns id, title, url, and a snippet.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: {
         query: { type: "string" },
@@ -25,7 +18,7 @@ const TOOLS: Tool[] = [
   {
     name: "fetch",
     description: "Fetch a document by id and return its content.",
-    input_schema: {
+    inputSchema: {
       type: "object",
       properties: { id: { type: "string" } },
       required: ["id"],
@@ -34,7 +27,7 @@ const TOOLS: Tool[] = [
   }
 ];
 
-// --- Static, private domain knowledge (not on the public internet) ---
+// --- Static corpus (unchanged) ---
 const CORPUS = [
   {
     id: "doc-42",
@@ -50,128 +43,124 @@ const CORPUS = [
       "Demo token (NOT A SECRET): purple-anvil\n"
   },
   {
-    id: "doc-77",
-    title: "ACME Codename Glossary",
-    url: "https://intranet.acme.local/glossary/codenames",
-    content:
-      "Project HAWK → 'Share Insights' analytics; owner: Data Platform.\n" +
-      "Project QUILL → Doc AI summarizer; owner: App Eng.\n"
+    id: "doc-77", title: "ACME Codename Glossary", url: "https://intranet.acme.local/glossary/codenames",
+    content: "Project HAWK → 'Share Insights' analytics; owner: Data Platform.\nProject QUILL → Doc AI summarizer; owner: App Eng.\n"
   },
   {
-    id: "doc-99",
-    title: "ACME Blackout Dates 2025 (internal)",
-    url: "https://intranet.acme.local/policies/blackouts-2025",
-    content:
-      "Change freeze windows: 2025-11-24..2025-12-02 and 2025-12-20..2026-01-05.\n"
+    id: "doc-99", title: "ACME Blackout Dates 2025 (internal)", url: "https://intranet.acme.local/policies/blackouts-2025",
+    content: "Change freeze windows: 2025-11-24..2025-12-02 and 2025-12-20..2026-01-05.\n"
   }
 ];
 
-
-
-function json(data: unknown, status = 200) {
+// ---------- helpers ----------
+function ok(data: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json" }
+    headers: { "content-type": "application/json; charset=utf-8", ...headers },
   });
 }
-
-function unauthorized(): Response {
-  return json({ error: "unauthorized" }, 401);
-}
-
-async function requireAuth(request: Request, env: Env) {
-  const token = request.headers.get("authorization");
-  console.log(token);
-  console.log(env.MCP_TOKEN);
-  if (!token || token !== `Bearer ${env.MCP_TOKEN}`) throw unauthorized();
-}
-
-export interface Env { MCP_TOKEN: string }
-
-type JsonRpcReq =
-  | { jsonrpc: "2.0"; id: number | string; method: "initialize"; params?: any }
-  | { jsonrpc: "2.0"; id: number | string; method: "tools/list"; params?: { cursor?: string } }
-  | { jsonrpc: "2.0"; id: number | string; method: "tools/call"; params: { name: string; arguments?: any } };
-
-function ok(data: unknown, status = 200, headers: Record<string, string> = {}) {
-  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", ...headers } });
-}
 function rpcResult(id: any, result: any) { return ok({ jsonrpc: "2.0", id, result }); }
-function rpcError(id: any, code: number, message: string) { return ok({ jsonrpc: "2.0", id, error: { code, message } }, 400); }
+function rpcError(id: any, code: number, message: string) {
+  // JSON-RPC error, but transport stays 200
+  return ok({ jsonrpc: "2.0", id, error: { code, message } });
+}
+function unauthorized() {
+  return new Response(JSON.stringify({ error: "unauthorized" }), {
+    status: 401,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // Optional: keep a simple GET for sanity checks
-    if (request.method === "GET" && url.pathname === "/tools/list") {
-      return ok({ tools: TOOLS }); // handy for local smoke tests only
+    // quick version check
+    if (request.method === "GET" && url.pathname === "/version") {
+      return ok({ version: "mcp-jsonrpc-v2" });
     }
 
-    // === Single MCP endpoint (Streamable HTTP, JSON-RPC) ===
+    // === MCP endpoint ===
     if (url.pathname === "/mcp" && request.method === "POST") {
-      try { await requireAuth(request, env); } catch (e: any) { return e as Response; }
-
-      let body: JsonRpcReq;
+      let body: any;
       try { body = await request.json(); } catch { return rpcError(null, -32700, "Parse error"); }
-      if (!body || body.jsonrpc !== "2.0" || !("method" in body)) return rpcError(null, -32600, "Invalid Request");
 
-      const id = (body as any).id ?? null;
       const method = body?.method as string | undefined;
+      const id = body?.id ?? null;
+      const isNotification = !!method && method.startsWith("notifications/");
 
-      console.log(id);
-      console.log(body);
-      console.log(body.method);
+      // Allow initialize + notifications without auth; require auth for tools/*
+      if (!isNotification && method !== "initialize") {
+        const token = request.headers.get("authorization");
+        if (!token || token !== `Bearer ${env.MCP_TOKEN}`) return unauthorized();
+      }
 
-      // 1) initialize
-      if (body.method === "initialize") {
+      // notifications (e.g., notifications/initialized)
+      if (isNotification) return new Response(null, { status: 204 });
+
+      if (method === "initialize") {
         return rpcResult(id, {
-          protocolVersion: "2025-06-18",
+          protocolVersion: "2025-03-26",
           capabilities: { tools: { listChanged: false } },
           serverInfo: { name: "mcp-static-demo", version: "1.0.0" }
         });
       }
 
-      // 2) tools/list
-      if (body.method === "tools/list") {
+      if (method === "tools/list") {
         return rpcResult(id, { tools: TOOLS, nextCursor: null });
       }
 
-      if (!!method && method.startsWith("notifications/")) {
-         return new Response(null, { status: 204 });
-      }      
+      if (method === "tools/call") {
+        const name = body?.params?.name as string | undefined;
+        let args = body?.params?.arguments ?? {};
 
-      // 3) tools/call
-      if (body.method === "tools/call") {
-        const { name, arguments: args = {} } = body.params || {};
+        if (typeof args === "string") {
+          try { args = JSON.parse(args); }
+          catch { return rpcError(id, -32602, "Invalid arguments JSON"); }
+        }
+
         if (name === "search") {
-          const q = (args.query || "").toString().toLowerCase();
+          const q = (args.query ?? "").toString().toLowerCase();
           if (!q) return rpcError(id, -32602, "Missing query");
           const topK = Math.min(10, Math.max(1, Number(args.top_k ?? 5)));
-          const hits = CORPUS.filter(d => d.title.toLowerCase().includes(q) || d.content.toLowerCase().includes(q))
-                             .slice(0, topK)
-                             .map(d => ({ id: d.id, title: d.title, url: d.url, snippet: d.content.slice(0, 200) }));
+          const hits = CORPUS
+            .filter(d => d.title.toLowerCase().includes(q) || d.content.toLowerCase().includes(q))
+            .slice(0, topK)
+            .map(d => ({ id: d.id, title: d.title, url: d.url })); // no snippet → encourages fetch
+
+          // 👇 Use text part for max compatibility
           return rpcResult(id, {
             content: [{ type: "text", text: JSON.stringify({ results: hits, total: hits.length }) }],
             isError: false
           });
         }
+
         if (name === "fetch") {
-          const idArg = args.id?.toString();
+          const idArg = (args.id ?? "").toString();
           const doc = CORPUS.find(d => d.id === idArg);
-          if (!doc) return rpcResult(id, { content: [{ type: "text", text: "not_found" }], isError: true });
+          if (!doc) {
+            return rpcResult(id, {
+              content: [{ type: "text", text: JSON.stringify({ error: "not_found", id: idArg }) }],
+              isError: true
+            });
+          }
+          const demoDoc = { ...doc, demo: true, sensitivity: "none" };
+
+          // 👇 Use text part here too
           return rpcResult(id, {
-            content: [{ type: "text", text: JSON.stringify(doc) }],
+            content: [{ type: "text", text: JSON.stringify(demoDoc) }],
             isError: false
           });
         }
+
+
         return rpcError(id, -32601, `Unknown tool: ${name}`);
       }
 
-      return rpcError(id, -32601, `Unknown method: ${(body as any).method}`);
+      return rpcError(id, -32601, `Unknown method: ${method}`);
     }
 
-    // Fallback
-    return ok({ ok: true, message: "MCP static demo. Use POST /mcp with JSON-RPC." });
+    // fallback for non-MCP routes
+    return ok({ ok: true, message: "MCP static demo. POST /mcp (JSON-RPC)." });
   }
 };
