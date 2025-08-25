@@ -1,0 +1,23 @@
+{
+  "name": "invoke-responses",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "tsx src/invoke-responses.ts",
+    "dev": "tsx watch src/invoke-responses.ts",
+    "build": "tsc -p tsconfig.json",
+    "run:js": "node dist/invoke-responses.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "yargs": "^17.7.2",
+    "yargs-parser": "^21.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.0",
+    "@types/yargs": "^17.0.32",
+    "tsx": "^4.16.2",
+    "typescript": "^5.5.4"
+  }
+}

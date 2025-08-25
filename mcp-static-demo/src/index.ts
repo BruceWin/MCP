@@ -4,7 +4,7 @@ export interface Env { MCP_TOKEN: string }
 const TOOLS = [
   {
     name: "search",
-    description: "Search private corpus. Returns id, title, url, and a snippet.",
+    description: "Search private corpus (title/content/url). Returns id/title/url ONLY. Use 'fetch' to read content.",
     inputSchema: {
       type: "object",
       properties: {
@@ -113,22 +113,36 @@ export default {
       if (method === "tools/call") {
         const name = body?.params?.name as string | undefined;
         let args = body?.params?.arguments ?? {};
-
         if (typeof args === "string") {
-          try { args = JSON.parse(args); }
-          catch { return rpcError(id, -32602, "Invalid arguments JSON"); }
+          try { args = JSON.parse(args); } catch { return rpcError(id, -32602, "Invalid arguments JSON"); }
         }
 
         if (name === "search") {
-          const q = (args.query ?? "").toString().toLowerCase();
-          if (!q) return rpcError(id, -32602, "Missing query");
-          const topK = Math.min(10, Math.max(1, Number(args.top_k ?? 5)));
-          const hits = CORPUS
-            .filter(d => d.title.toLowerCase().includes(q) || d.content.toLowerCase().includes(q))
-            .slice(0, topK)
-            .map(d => ({ id: d.id, title: d.title, url: d.url })); // no snippet → encourages fetch
+          const qRaw = (args.query ?? "").toString().trim();
+          if (!qRaw) return rpcError(id, -32602, "Missing query");
 
-          // 👇 Use text part for max compatibility
+          const topK = Math.min(10, Math.max(1, Number(args.top_k ?? 5)));
+
+          // normalize and simple tokenizer
+          const norm = (s: string) => s.toLowerCase();
+          const q = norm(qRaw);
+          const terms = q.split(/\s+/).filter(Boolean);
+
+          // include title + content + url in the haystack
+          const hay = (d: typeof CORPUS[number]) => norm(`${d.title}\n${d.content}\n${d.url}`);
+
+          // simple term match score
+          const score = (d: typeof CORPUS[number]) =>
+            terms.reduce((acc, t) => acc + (hay(d).includes(t) ? 1 : 0), 0);
+
+          // compute, filter non-zero, sort, trim, map
+          const hits = CORPUS
+            .map(d => ({ d, s: score(d) }))
+            .filter(x => x.s > 0)
+            .sort((a, b) => b.s - a.s)
+            .slice(0, topK)
+            .map(x => ({ id: x.d.id, title: x.d.title, url: x.d.url }));
+
           return rpcResult(id, {
             content: [{ type: "text", text: JSON.stringify({ results: hits, total: hits.length }) }],
             isError: false
@@ -145,16 +159,14 @@ export default {
             });
           }
           const demoDoc = { ...doc, demo: true, sensitivity: "none" };
-
-          // 👇 Use text part here too
           return rpcResult(id, {
             content: [{ type: "text", text: JSON.stringify(demoDoc) }],
             isError: false
           });
         }
 
-
         return rpcError(id, -32601, `Unknown tool: ${name}`);
+
       }
 
       return rpcError(id, -32601, `Unknown method: ${method}`);
