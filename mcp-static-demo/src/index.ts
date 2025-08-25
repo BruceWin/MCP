@@ -66,6 +66,8 @@ const CORPUS = [
   }
 ];
 
+
+
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -79,52 +81,88 @@ function unauthorized(): Response {
 
 async function requireAuth(request: Request, env: Env) {
   const token = request.headers.get("authorization");
+  console.log(token);
+  console.log(env.MCP_TOKEN);
   if (!token || token !== `Bearer ${env.MCP_TOKEN}`) throw unauthorized();
 }
+
+export interface Env { MCP_TOKEN: string }
+
+type JsonRpcReq =
+  | { jsonrpc: "2.0"; id: number | string; method: "initialize"; params?: any }
+  | { jsonrpc: "2.0"; id: number | string; method: "tools/list"; params?: { cursor?: string } }
+  | { jsonrpc: "2.0"; id: number | string; method: "tools/call"; params: { name: string; arguments?: any } };
+
+function ok(data: unknown, status = 200, headers: Record<string, string> = {}) {
+  return new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json", ...headers } });
+}
+function rpcResult(id: any, result: any) { return ok({ jsonrpc: "2.0", id, result }); }
+function rpcError(id: any, code: number, message: string) { return ok({ jsonrpc: "2.0", id, error: { code, message } }, 400); }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    // 1) Tool discovery (MCP expects /tools/list)
+    // Optional: keep a simple GET for sanity checks
     if (request.method === "GET" && url.pathname === "/tools/list") {
-      return json({ tools: TOOLS });
+      return ok({ tools: TOOLS }); // handy for local smoke tests only
     }
 
-    // All tool calls require auth
-    if (url.pathname.startsWith("/tools/")) {
+    // === Single MCP endpoint (Streamable HTTP, JSON-RPC) ===
+    if (url.pathname === "/mcp" && request.method === "POST") {
       try { await requireAuth(request, env); } catch (e: any) { return e as Response; }
+
+      let body: JsonRpcReq;
+      try { body = await request.json(); } catch { return rpcError(null, -32700, "Parse error"); }
+      if (!body || body.jsonrpc !== "2.0" || !("method" in body)) return rpcError(null, -32600, "Invalid Request");
+
+      const id = (body as any).id ?? null;
+
+      // 1) initialize
+      if (body.method === "initialize") {
+        return rpcResult(id, {
+          protocolVersion: "2025-06-18",
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: "mcp-static-demo", version: "1.0.0" }
+        });
+      }
+
+      // 2) tools/list
+      if (body.method === "tools/list") {
+        return rpcResult(id, { tools: TOOLS, nextCursor: null });
+      }
+
+      // 3) tools/call
+      if (body.method === "tools/call") {
+        const { name, arguments: args = {} } = body.params || {};
+        if (name === "search") {
+          const q = (args.query || "").toString().toLowerCase();
+          if (!q) return rpcError(id, -32602, "Missing query");
+          const topK = Math.min(10, Math.max(1, Number(args.top_k ?? 5)));
+          const hits = CORPUS.filter(d => d.title.toLowerCase().includes(q) || d.content.toLowerCase().includes(q))
+                             .slice(0, topK)
+                             .map(d => ({ id: d.id, title: d.title, url: d.url, snippet: d.content.slice(0, 200) }));
+          return rpcResult(id, {
+            content: [{ type: "text", text: JSON.stringify({ results: hits, total: hits.length }) }],
+            isError: false
+          });
+        }
+        if (name === "fetch") {
+          const idArg = args.id?.toString();
+          const doc = CORPUS.find(d => d.id === idArg);
+          if (!doc) return rpcResult(id, { content: [{ type: "text", text: "not_found" }], isError: true });
+          return rpcResult(id, {
+            content: [{ type: "text", text: JSON.stringify(doc) }],
+            isError: false
+          });
+        }
+        return rpcError(id, -32601, `Unknown tool: ${name}`);
+      }
+
+      return rpcError(id, -32601, `Unknown method: ${(body as any).method}`);
     }
 
-    // 2) search
-    if (request.method === "POST" && url.pathname === "/tools/search") {
-      const { query, top_k = 5 } = await request.json().catch(() => ({}));
-      if (!query || typeof query !== "string") return json({ error: "query required" }, 400);
-
-      const q = query.toLowerCase();
-      const hits = CORPUS.filter(d =>
-        d.title.toLowerCase().includes(q) || d.content.toLowerCase().includes(q)
-      ).slice(0, Math.min(10, Math.max(1, top_k)));
-
-      return json({
-        results: hits.map(d => ({
-          id: d.id,
-          title: d.title,
-          url: d.url,
-          snippet: d.content.slice(0, 200)
-        })),
-        total: hits.length
-      });
-    }
-
-    // 3) fetch
-    if (request.method === "POST" && url.pathname === "/tools/fetch") {
-      const { id } = await request.json().catch(() => ({}));
-      const doc = CORPUS.find(d => d.id === id);
-      if (!doc) return json({ error: "not_found" }, 404);
-      return json({ id: doc.id, title: doc.title, url: doc.url, content: doc.content });
-    }
-
-    return json({ ok: true, message: "MCP static demo. Use /tools/list, /tools/search, /tools/fetch." });
+    // Fallback
+    return ok({ ok: true, message: "MCP static demo. Use POST /mcp with JSON-RPC." });
   }
 };
