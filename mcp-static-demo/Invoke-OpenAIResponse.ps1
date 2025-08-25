@@ -4,8 +4,8 @@
 param(
   [string]$Model = "gpt-5-mini",
   [switch]$DumpJson,                 # add -DumpJson to print the whole JSON
-  [string]$WorkerUrl = "",           # set to your Worker to test WITH tool
-  [string]$McpToken = ""             # token for your Worker (Authorization: Bearer <token>)
+  [string]$WorkerUrl = ""
+  [string]$McpToken = $env:MCP_TOKEN             # token for your Worker (Authorization: Bearer <token>)
 )
 
 if (-not $env:OPENAI_API_KEY) {

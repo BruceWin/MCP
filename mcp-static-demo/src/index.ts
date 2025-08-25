@@ -47,7 +47,7 @@ const CORPUS = [
       "3) Promote standby 'polyp-2' to primary\n" +
       "4) Run post-switch check 'reef:health'\n" +
       "5) Notify on-call via #ops-jellyfish\n" +
-      "Passphrase for controller unlock: purple-anvil\n"
+      "Demo token (NOT A SECRET): purple-anvil\n"
   },
   {
     id: "doc-77",

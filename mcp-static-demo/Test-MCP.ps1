@@ -27,8 +27,8 @@
 #>
 
 param(
-  [string]$WorkerUrl = "http://127.0.0.1:8787",
-  [string]$McpToken  = "dev-secret-123",
+  [string]$WorkerUrl = "",
+  [string]$McpToken  = $env:MCP_TOKEN,
   [string]$OpenAIKey = $env:OPENAI_API_KEY,
   [string]$Model     = "gpt-4.1",
   [switch]$SkipOpenAI
