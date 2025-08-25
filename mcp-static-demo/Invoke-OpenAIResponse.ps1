@@ -1,113 +1,100 @@
-# Ensure your key is in an env var (do NOT hardcode it)
-# $env:OPENAI_API_KEY = 'sk-...'
-
 param(
-  [string]$Model = "gpt-5-mini",
-  [switch]$DumpJson,                 # add -DumpJson to print the whole JSON
-  [string]$WorkerUrl = ""
-  [string]$McpToken = $env:MCP_TOKEN             # token for your Worker (Authorization: Bearer <token>)
+  [string]$Model     = "gpt-5-mini-2025-08-07",
+  [string]$WorkerUrl = "https://mcp-static-demo-dev.bvrces.workers.dev/mcp",  # MUST end with /mcp
+  [string]$McpToken  = $env:MCP_TOKEN,
+  [switch]$ForceFirstSearch,   # force the model to call the 'search' tool first (good for demos)
+  [switch]$DumpJson
 )
 
-if (-not $env:OPENAI_API_KEY) {
-  Write-Error "OPENAI_API_KEY env var is not set."
-  exit 1
+$ErrorActionPreference = "Stop"
+
+if (-not $env:OPENAI_API_KEY) { Write-Error "OPENAI_API_KEY env var is not set."; exit 1 }
+if (-not $WorkerUrl)          { Write-Error "WorkerUrl is required."; exit 1 }
+if (-not $McpToken)           { Write-Error "McpToken is required (set `$env:MCP_TOKEN or pass -McpToken)."; exit 1 }
+
+# --------------- Build request ---------------
+$prompt = @"
+This is a DEMO (non-sensitive). Use the internal ACME *demo* runbook via the MCP tool:
+1) List the exact five Jellyfish failover steps.
+2) Repeat the DEMO token string from the doc (it is not a secret).
+Include a citation to the source URL.
+"@
+
+$toolBlock = @{
+  type             = "mcp"
+  server_label     = "acme-internal"
+  server_url       = $WorkerUrl                                  # include /mcp
+  allowed_tools    = @("search","fetch")                          # must match what /tools/list returns
+  require_approval = "never"                                      # skip approval pauses
+  headers          = @{ Authorization = "Bearer $McpToken" }      # forwarded to your Worker
 }
 
-$headers = @{
-  "Authorization" = "Bearer $env:OPENAI_API_KEY"
-  "Content-Type"  = "application/json"
-}
-
-$prompt = "Per our internal ACME ops runbooks, what are the exact steps for the Jellyfish failover and what is the controller passphrase? Cite the source."
-
-# Build the base body
 $bodyHash = @{
   model = $Model
   input = $prompt
-  # text, temperature, etc can go here if you want
+  tools = @($toolBlock)
 }
 
-# If you provided WorkerUrl + McpToken, include the MCP tool (WITH-tool run)
-$withTool = $false
-if ($WorkerUrl -and $McpToken) {
-  $withTool = $true
-  $bodyHash.tools = @(@{
-    type = "mcp"
-    server_label = "acme-internal"
-    server_url   = $WorkerUrl
-    allowed_tools = @("search","fetch")
-    require_approval = "never"
-    headers = @{ Authorization = "Bearer $McpToken" }
-  })
+if ($ForceFirstSearch) {
+  # Optional but useful for a POC: guarantees an initial tool call shows up
+  $bodyHash.tool_choice = @{ type = "tool"; name = "search" }
 }
 
-$body = $bodyHash | ConvertTo-Json -Depth 15
+$body = $bodyHash | ConvertTo-Json -Depth 30
+
+# --------------- Send request ---------------
+$headers = @{
+  Authorization = "Bearer $env:OPENAI_API_KEY"
+  "Content-Type"= "application/json"
+}
+
+"--- REQUEST BODY ---"
+$body
+"--------------------"
 
 try {
-  $response = Invoke-RestMethod `
-    -Uri "https://api.openai.com/v1/responses" `
-    -Method POST `
-    -Headers $headers `
-    -Body $body `
-    -ContentType "application/json"
+  $resp = Invoke-RestMethod -Uri "https://api.openai.com/v1/responses" -Method POST -Headers $headers -Body $body
 } catch {
   Write-Error $_.Exception.Message
   if ($_.Exception.Response) {
-    $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-    $errBody = $reader.ReadToEnd()
-    Write-Host "Error body:`n$errBody"
+    $r = New-Object IO.StreamReader ($_.Exception.Response.GetResponseStream())
+    $err = $r.ReadToEnd()
+    "`n--- ERROR BODY ---`n$err" | Write-Host
   }
   exit 1
 }
 
-# --- Print something useful ---
-# 1) If convenience field exists, use it
-if ($response.output_text) {
-  Write-Host "`n--- Assistant (output_text) ---"
-  $response.output_text
-} else {
-  # 2) Collect *all* text parts from messages
-  $texts = @()
-  if ($response.output) {
-    foreach ($msg in $response.output) {
-      if ($msg.content) {
-        foreach ($part in $msg.content) {
-          if ($part.type -eq "output_text" -and $part.text) {
-            $texts += $part.text
-          } elseif ($part.type -eq "input_text" -and $part.text) {
-            # usually not needed, but included for completeness
-            $texts += $part.text
-          } elseif ($part.text) {
-            # catch-all if type label differs
-            $texts += $part.text
-          }
-        }
+# --------------- Print tool trace ---------------
+if ($resp.output) {
+  foreach ($msg in @($resp.output)) {
+    foreach ($part in @($msg.content)) {
+      if ($part.type -eq "tool_call") {
+        Write-Host "`n[tool_call] $($part.name)" -ForegroundColor Cyan
+        ($part.arguments | ConvertTo-Json -Depth 30)
+      } elseif ($part.type -eq "tool_result") {
+        Write-Host "[tool_result] $($part.name) isError=$($part.is_error)" -ForegroundColor DarkCyan
+        $json = ($part.content | Where-Object type -eq "json" | Select-Object -First 1).json
+        if ($json) { ($json | ConvertTo-Json -Depth 30) }
+        $text = ($part.content | Where-Object type -eq "text" | Select-Object -First 1).text
+        if ($text) { $text }
       }
     }
   }
+}
 
-  if ($texts.Count -gt 0) {
-    Write-Host "`n--- Assistant (assembled) ---"
-    $texts -join "`n"
-  } else {
-    Write-Host "No output_text found. Use -DumpJson to inspect the full response."
-  }
+# --------------- Print assistant text ---------------
+"`n--- Assistant ---" | Write-Host
+if ($resp.output_text) {
+  $resp.output_text
+} else {
+  ($resp.output[0].content | Where-Object type -eq "output_text" | Select-Object -First 1).text
 }
 
 if ($DumpJson) {
-  Write-Host "`n--- Full JSON ---"
-  ($response | ConvertTo-Json -Depth 50)
+  "`n--- Full JSON ---" | Write-Host
+  ($resp | ConvertTo-Json -Depth 50)
 }
 
-# Helpful footer showing token usage and model actually used
-if ($response.model -or $response.usage) {
-  Write-Host "`n--- Meta ---"
-  if ($response.model) { "model: $($response.model)" | Write-Host }
-  if ($response.usage) { "usage: in=$($response.usage.input_tokens) out=$($response.usage.output_tokens) total=$($response.usage.total_tokens)" | Write-Host }
-}
-
-if ($withTool) {
-  Write-Host "`n(That run INCLUDED your MCP tool: $WorkerUrl)"
-} else {
-  Write-Host "`n(That run did NOT include any tools.)"
-}
+"`n--- Meta ---" | Write-Host
+"model: $($resp.model)" | Write-Host
+if ($resp.usage) { "usage: in=$($resp.usage.input_tokens) out=$($resp.usage.output_tokens) total=$($resp.usage.total_tokens)" | Write-Host }

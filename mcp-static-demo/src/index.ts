@@ -117,6 +117,11 @@ export default {
       if (!body || body.jsonrpc !== "2.0" || !("method" in body)) return rpcError(null, -32600, "Invalid Request");
 
       const id = (body as any).id ?? null;
+      const method = body?.method as string | undefined;
+
+      console.log(id);
+      console.log(body);
+      console.log(body.method);
 
       // 1) initialize
       if (body.method === "initialize") {
@@ -131,6 +136,10 @@ export default {
       if (body.method === "tools/list") {
         return rpcResult(id, { tools: TOOLS, nextCursor: null });
       }
+
+      if (!!method && method.startsWith("notifications/")) {
+         return new Response(null, { status: 204 });
+      }      
 
       // 3) tools/call
       if (body.method === "tools/call") {
